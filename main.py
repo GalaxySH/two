@@ -10,7 +10,6 @@ from pyglet.image import load as iload, ImageGrid, Animation
 from pyglet.media import load as mload
 from random import random
 
-
 def load_animation(image, rows=2, cols=1, fr=0.5):
     seq = ImageGrid(iload(image), rows, cols)
     return Animation.from_image_sequence(seq, fr)
@@ -52,6 +51,7 @@ class PlayerCannon(Actor):
     def collide(self, other: Actor):
         other.kill()
         self.kill()
+        self.parent.respawn_player()  # calling respawn from here on collision
 
     def update(self, delta_time):
         # rightward is positive, leftward is negative
@@ -67,6 +67,39 @@ class PlayerCannon(Actor):
                 (horizontal_movement_direction < 0 and self.x > left_edge)
         ):  # can move
             self.move(magnitude)
+
+        is_firing = keyboard[key.SPACE]
+        if PlayerShoot.ACTIVE_SHOOT is None and is_firing:
+            self.parent.add(PlayerShoot(self.x, self.y + 50))
+
+        # if self.parent.collide_check(self):
+        #     self.parent.respawn_player()
+
+
+class PlayerShoot(Actor):
+    ACTIVE_SHOOT = None
+
+    def __init__(self, x, y):
+        super(PlayerShoot, self).__init__(load_animation('img/missile2.png', fr=1), x, y)
+
+        self.speed = Vector2(0, 400)
+        PlayerShoot.ACTIVE_SHOOT = self
+
+    def on_exit(self):
+        super(PlayerShoot, self).on_exit()
+        PlayerShoot.ACTIVE_SHOOT = None
+
+    def collide(self, other):
+        # print(f"collision: {str(other)}")
+        if isinstance(other, Alien):
+            self.parent.add_points(other.points)  # add the alien's assigned number of points
+            # self.parent.remove(PlayerShoot.ACTIVE_SHOOT)
+            # remove the alien and missile instances
+            self.kill()
+            other.kill()
+
+    def update(self, delta_time):
+        self.move(self.speed * delta_time)
 
 
 class Alien(Actor):
@@ -85,6 +118,19 @@ class Alien(Actor):
     def from_type(x, y, alien_type, column):
         animation, points = SPECIES[alien_type]
         return Alien(animation, x, y, points, column)
+
+    def collide(self, other):
+        self.kill()
+
+
+class AlienShoot(Actor):
+    def __init__(self, x, y):
+        super(AlienShoot, self).__init__('img/shoot.png', x, y)
+
+        self.speed = Vector2(0, -400)
+
+    def update(self, delta_time):
+        self.move(self.speed * delta_time)
 
 
 class AlienColumn:
@@ -110,6 +156,13 @@ class AlienColumn:
 
         return x >= width - 50 and direction == 1 \
             or x <= 50 and direction == -1
+
+    def shoot(self):
+        if len(self.aliens) > 0 and random() < 0.001:  # 5% probability per second
+            x, y = self.aliens[0].position
+            return AlienShoot(x, y - 50)  # shoot 50px below origin
+        else:
+            return None
 
 
 class Swarm:
@@ -162,6 +215,7 @@ class Swarm:
             self.level_elapsed -= self.level_period
             self.increase_difficulty()
 
+        # FIXME: temporary logic to allow manually increasing level
         if not self.increase_temp and keyboard[key.DOWN]:
             self.increase_temp = True
         if not keyboard[key.DOWN] and self.increase_temp:
@@ -169,24 +223,23 @@ class Swarm:
             self.increase_difficulty()
 
     def increase_difficulty(self):
-        self.level += 1
-        self.gl.set_level(self.level)
-        self.level_modifier += 0.3
-        self.speed = self.base_speed * self.level_modifier
+        """
+        Increase the speed of swarm movement and possibly other properties
+        to simulate a 'harder' enemy
+        """
+        if self.level < 15:
+            self.level += 1  # set internal reference to level
+            self.gl.set_level(self.level)  # set level on scoreboard and in GameLayer
 
+            # self.level_modifier += 0.3
+            modifier_mod = -0.008
+            if self.level_modifier + modifier_mod > 0:
+                self.level_modifier += modifier_mod  # while step rate increases, decrease distance
+            period_mod = -0.07
+            if self.period + period_mod > 0:
+                self.period += period_mod  # increase rate of alien movement (not distance)
 
-class PlayerShoot(Actor):
-    ACTIVE_SHOOT = None
-
-    def __init__(self, x, y):
-        super(PlayerShoot, self).__init__('img/missile.png', x, y)
-
-        self.speed = Vector2(0, 400)
-        PlayerShoot.ACTIVE_SHOOT = self
-
-    def collide(self, other):
-        if isinstance(other, Alien):
-            self.parent.update_score(other.points)
+            self.speed = self.base_speed * self.level_modifier  # set actual speed
 
 
 class HUD(Layer):
@@ -218,10 +271,10 @@ class HUD(Layer):
     def update_level(self, new_level: int):
         self.level_text.element.text = f"Lvl: {new_level}"
 
-    def show_over(self, message):
+    def show_over(self, message, color=(169, 18, 18, 255)):
         w, h = director.get_window_size()
 
-        text = Label(message, font_size=50, anchor_x="center", anchor_y="center")
+        text = Label(message, color=color, font_size=50, anchor_x="center", anchor_y="center", bold=True)
         text.position = (w * 0.5, h * 0.5)
 
         self.add(text)
@@ -272,14 +325,44 @@ class GameLayer(Layer):
     def set_level(self, level=1):
         self.hud.update_level(level)
 
+    def respawn_player(self):
+        self.lives -= 1
+        if self.lives < 0:
+            self.game_over()
+        else:
+            self.create_player()
+
+    def game_over(self):
+        self.unschedule(self.game_loop)
+        self.hud.show_over('GAME OVER')
+
+    def collide_check(self, actor):
+        """
+        :param actor: who to check if colliding with something else
+        :return: boolean
+        """
+        if actor is not None:
+            for colliding_actor in self.collman.iter_colliding(actor):
+                actor.collide(colliding_actor)
+                return True
+
+        return False
+
     def game_loop(self, dt):
         self.collman.clear()
 
         for _, actor in self.children:
             self.collman.add(actor)
+            if not self.collman.knows(actor):
+                self.remove(actor)
             actor.update(dt)
 
-        self.swarm.update(dt)
+            self.collide_check(actor)
+
+        self.swarm.update(dt)  # the swarm will move AFTER collision checking, do I want that?
+
+        self.collide_check(PlayerShoot.ACTIVE_SHOOT)
+        self.collide_check(self.player)
 
 
 if __name__ == "__main__":
