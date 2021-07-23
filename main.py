@@ -49,8 +49,8 @@ class PlayerCannon(Actor):
         self.speed = Vector2(200, 0)
 
     def collide(self, other: Actor):
-        other.kill()
-        self.kill()
+        other.kill()  # this causes an error for some reason
+        # self.kill()  # this is handled in the respawn method
         self.parent.respawn_player()  # calling respawn from here on collision
 
     def update(self, delta_time):
@@ -173,6 +173,8 @@ class Swarm:
         self.columns = [AlienColumn(x + i * 60, y) for i in range(10)]
         self.gl = game
 
+        self.shoot_probability = 0.0001
+
         self.level = 1
         self.level_modifier = 1.0
         self.level_elapsed = 0
@@ -238,6 +240,7 @@ class Swarm:
             period_mod = -0.07
             if self.period + period_mod > 0:
                 self.period += period_mod  # increase rate of alien movement (not distance)
+            self.shoot_probability += 0.002
 
             self.speed = self.base_speed * self.level_modifier  # set actual speed
 
@@ -326,8 +329,14 @@ class GameLayer(Layer):
         self.hud.update_level(level)
 
     def respawn_player(self):
+        if self.player is not None:
+            self.player.kill()
+            self.player = None  # not having this caused a 'cannot find child' error before
+            # it must mean that it was trying to kill the player
+            # because it was 'not None' even when no player had been spawned
         self.lives -= 1
-        if self.lives < 0:
+        if self.lives < 1:
+            self.hud.update_lives(0)
             self.game_over()
         else:
             self.create_player()
@@ -349,15 +358,26 @@ class GameLayer(Layer):
         return False
 
     def game_loop(self, dt):
+        # collision checking
+        # for _, actor in self.children:
+
+
+        # update actors and reset collision grid
         self.collman.clear()
 
         for _, actor in self.children:
             self.collman.add(actor)
             if not self.collman.knows(actor):
                 self.remove(actor)
+
             actor.update(dt)
 
             self.collide_check(actor)
+
+        for column in self.swarm.columns:
+            shoot = column.shoot()
+            if shoot is not None:
+                self.add(shoot)
 
         self.swarm.update(dt)  # the swarm will move AFTER collision checking, do I want that?
 
